@@ -30,6 +30,13 @@ if(NOT "${TEST_CMAKE_MAKE_PROGRAM}" STREQUAL "")
     list(APPEND configure_command
         "-DCMAKE_MAKE_PROGRAM=${TEST_CMAKE_MAKE_PROGRAM}")
 endif()
+if(DEFINED QT_FORCE_MIN_CMAKE_VERSION_FOR_USING_QT)
+    string(CONCAT qt_minimum_argument
+        "-DQT_FORCE_MIN_CMAKE_VERSION_FOR_USING_QT="
+        "${QT_FORCE_MIN_CMAKE_VERSION_FOR_USING_QT}")
+    list(APPEND configure_command
+        "${qt_minimum_argument}")
+endif()
 
 execute_process(
     COMMAND ${configure_command}

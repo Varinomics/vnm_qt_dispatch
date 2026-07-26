@@ -1,5 +1,17 @@
 find_package(Qt6 ${VNM_QT_DISPATCH_QT_MIN_VERSION} REQUIRED COMPONENTS Test)
 
+function(vnm_qt_dispatch_register_test test_name)
+    if(WIN32)
+        add_test(
+            NAME ${test_name}
+            COMMAND "${CMAKE_COMMAND}" -E env
+                "PATH=$<TARGET_FILE_DIR:Qt6::Core>$<SEMICOLON>$ENV{PATH}"
+                ${ARGN})
+    else()
+        add_test(NAME ${test_name} COMMAND ${ARGN})
+    endif()
+endfunction()
+
 function(vnm_qt_dispatch_add_qt_test target source)
     add_executable(${target} ${source})
     set_target_properties(${target} PROPERTIES AUTOMOC ON)
@@ -9,15 +21,10 @@ function(vnm_qt_dispatch_add_qt_test target source)
             vnm_qt_dispatch::vnm_qt_dispatch
             Qt6::Test
     )
-    add_test(NAME ${target} COMMAND ${target})
+    vnm_qt_dispatch_register_test(
+        ${target}
+        "$<TARGET_FILE:${target}>")
     set_tests_properties(${target} PROPERTIES TIMEOUT 60)
-    if(WIN32)
-        set_tests_properties(
-            ${target}
-            PROPERTIES
-                ENVIRONMENT_MODIFICATION
-                    "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
-    endif()
 endfunction()
 
 vnm_qt_dispatch_add_qt_test(
@@ -38,20 +45,13 @@ target_link_libraries(
     vnm_qt_dispatch_tls_exit_tests
     PRIVATE
         vnm_qt_dispatch::vnm_qt_dispatch)
-add_test(
-    NAME vnm_qt_dispatch_tls_exit_tests
-    COMMAND vnm_qt_dispatch_tls_exit_tests)
+vnm_qt_dispatch_register_test(
+    vnm_qt_dispatch_tls_exit_tests
+    "$<TARGET_FILE:vnm_qt_dispatch_tls_exit_tests>")
 set_tests_properties(
     vnm_qt_dispatch_tls_exit_tests
     PROPERTIES
         TIMEOUT 120)
-if(WIN32)
-    set_tests_properties(
-        vnm_qt_dispatch_tls_exit_tests
-        PROPERTIES
-            ENVIRONMENT_MODIFICATION
-                "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
-endif()
 
 set(vnm_qt_dispatch_nested_test_arguments
     "-DPROVIDER_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
@@ -66,27 +66,27 @@ set(vnm_qt_dispatch_nested_test_arguments
     "-DTEST_INSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
     "-DTEST_INSTALL_DATADIR=${CMAKE_INSTALL_DATADIR}"
 )
+if(DEFINED QT_FORCE_MIN_CMAKE_VERSION_FOR_USING_QT)
+    string(CONCAT qt_minimum_argument
+        "-DQT_FORCE_MIN_CMAKE_VERSION_FOR_USING_QT="
+        "${QT_FORCE_MIN_CMAKE_VERSION_FOR_USING_QT}")
+    list(APPEND vnm_qt_dispatch_nested_test_arguments
+        "${qt_minimum_argument}")
+endif()
 
-add_test(
-    NAME vnm_qt_dispatch_subproject_consumer
-    COMMAND "${CMAKE_COMMAND}"
+vnm_qt_dispatch_register_test(
+    vnm_qt_dispatch_subproject_consumer
+    "${CMAKE_COMMAND}"
         ${vnm_qt_dispatch_nested_test_arguments}
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_subproject_consumer.cmake")
 set_tests_properties(
     vnm_qt_dispatch_subproject_consumer
     PROPERTIES
         TIMEOUT 300)
-if(WIN32)
-    set_tests_properties(
-        vnm_qt_dispatch_subproject_consumer
-        PROPERTIES
-            ENVIRONMENT_MODIFICATION
-                "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
-endif()
 
-add_test(
-    NAME vnm_qt_dispatch_installed_consumer
-    COMMAND "${CMAKE_COMMAND}"
+vnm_qt_dispatch_register_test(
+    vnm_qt_dispatch_installed_consumer
+    "${CMAKE_COMMAND}"
         ${vnm_qt_dispatch_nested_test_arguments}
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_installed_consumer.cmake")
 set_tests_properties(
@@ -94,10 +94,3 @@ set_tests_properties(
     PROPERTIES
         TIMEOUT 300
         RUN_SERIAL TRUE)
-if(WIN32)
-    set_tests_properties(
-        vnm_qt_dispatch_installed_consumer
-        PROPERTIES
-            ENVIRONMENT_MODIFICATION
-                "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
-endif()
