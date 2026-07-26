@@ -8,43 +8,44 @@
 #include <concepts>
 #include <exception>
 #include <functional>
+#include <future>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 
+#if QT_VERSION < QT_VERSION_CHECK(6, 5, 0)
+#  error "vnm_qt_dispatch requires Qt 6.5 or newer."
+#endif
+
+#ifdef QT_NO_EXCEPTIONS
+#  error "vnm_qt_dispatch requires C++ exception support."
+#endif
+
 /**
  * @file vnm_qt_dispatch.h
- * @brief Qt Core-only safe dispatch primitives.
+ * @brief Owned and exception-contained dispatch through QObject affinity.
  *
- * This header owns the common QObject dispatch contract:
+ * `post()` always queues exact-void work. `blocking_call()` executes inline when
+ * the receiver belongs to the calling thread and otherwise queues the work and
+ * waits. Callable objects and ordinary typed-member arguments are decayed and
+ * owned as values; member arguments are consumed once. Decaying a pointer or a
+ * view does not own its referent. Use `std::ref()` only for deliberate reference
+ * semantics.
  *
- * - `post_with_exception_reporter()` always queues exact-void work and reports
- *   admission through `Post_result`. It contains queued target and reporter
- *   exceptions.
- * - `call()` invokes work synchronously on the receiver's affinity thread,
- *   propagates target exceptions, and reports dispatch failures through
- *   `Dispatch_error`.
+ * The library does not make a raw `QObject*` lifetime-safe. The receiver must
+ * remain valid, and its thread affinity must not change concurrently, while an
+ * operation inspects and submits through that pointer. A cross-thread blocking
+ * call additionally requires the queued event either to run or to be destroyed;
+ * otherwise its wait is intentionally unbounded.
  *
- * No `Q_ARG` or manual `QMetaType` registration is required. Cross-thread
- * arguments and functors are captured into queued lambdas; do not pass
- * non-owning views such as `QStringView` or `std::string_view` unless the
- * referenced storage is guaranteed to outlive execution on the receiver thread.
- *
- * `post()` reports queued target exceptions through Qt's warning channel.
- * `post_with_exception_reporter()` lets callers provide an explicit policy;
- * passing `nullptr` deliberately suppresses reporting.
- *
- * Task captures, bound member arguments, intermediate and result values, and
- * transported exception objects must have non-throwing, thread-agnostic
- * destruction. They can be destroyed on the submitting thread, the receiver
- * thread, or a thread removing posted events. Raw receiver pointers must remain
- * alive with stable affinity for the lifetime required by each operation.
- *
- * Qt signal members are protected. Code outside the emitter's class hierarchy
- * must use a public wrapper method when it cannot name the signal member
- * directly.
+ * Stored tasks, reporters, arguments, results, and exception objects can be
+ * destroyed on the submitting thread, receiver thread, or a thread removing
+ * posted events. Their destruction must therefore be non-throwing and
+ * thread-agnostic. The concepts below enforce non-throwing destruction where
+ * the C++ type system can express it.
  */
 
 namespace vnm {
@@ -56,6 +57,7 @@ enum class Post_result
     RECEIVER_NULL,
     NO_THREAD_AFFINITY,
     SUBMISSION_FAILED,
+    STORAGE_FAILED,
 };
 
 enum class Dispatch_errc
@@ -84,54 +86,80 @@ private:
     Dispatch_errc m_error_code;
 };
 
-using Exception_reporter = void (*)(std::exception_ptr);
+/** Explicit policy for intentionally discarding exceptions from posted work. */
+struct Ignore_exceptions
+{
+    void operator()(std::exception_ptr) const noexcept
+    {}
+};
+
+inline constexpr Ignore_exceptions ignore_exceptions{};
 
 namespace detail {
 
-inline void report_dispatch_exception(std::exception_ptr exception) noexcept
+struct Qt_warning_reporter
 {
-    try {
-        try {
-            std::rethrow_exception(exception);
+    void operator()(std::exception_ptr exception) const noexcept
+    {
+        if (!exception) {
+            return;
         }
-        catch (const std::exception& e) {
-            qWarning(
-                "vnm::qt::post: Queued target threw an exception: %s",
-                e.what());
+
+        try {
+            try {
+                std::rethrow_exception(exception);
+            }
+            catch (const std::exception& error) {
+                qWarning(
+                    "vnm::qt::post: Queued target threw an exception: %s",
+                    error.what());
+            }
+            catch (...) {
+                qWarning(
+                    "vnm::qt::post: Queued target threw an unknown exception.");
+            }
         }
         catch (...) {
-            qWarning("vnm::qt::post: Queued target threw an unknown exception.");
+            // Diagnostics must not escape through Qt event delivery.
         }
     }
-    catch (...) {
-        // A diagnostic failure must not escape the Qt callback.
-    }
-}
+};
 
-template<class TaskSource>
-using stored_task_t = std::decay_t<TaskSource>;
+inline constexpr Qt_warning_reporter qt_warning_reporter{};
+
+template<class Source>
+using stored_t = std::decay_t<Source>;
 
 template<class TaskSource>
 concept Storable_task =
-    std::constructible_from<stored_task_t<TaskSource>, TaskSource&&> &&
-    std::move_constructible<stored_task_t<TaskSource>>;
+    std::constructible_from<stored_t<TaskSource>, TaskSource&&>;
 
 template<class TaskSource>
-concept Invocable_stored_task =
+concept Invocable_task =
     Storable_task<TaskSource> &&
-    std::invocable<stored_task_t<TaskSource>&>;
+    std::invocable<stored_t<TaskSource>&>;
 
 template<class TaskSource>
 concept Exact_void_task =
-    Invocable_stored_task<TaskSource> &&
-    std::same_as<std::invoke_result_t<stored_task_t<TaskSource>&>, void>;
+    Invocable_task<TaskSource> &&
+    std::same_as<std::invoke_result_t<stored_t<TaskSource>&>, void>;
+
+template<class Result>
+concept Storable_result =
+    std::is_void_v<Result> ||
+    (!std::is_reference_v<Result> &&
+     std::constructible_from<Result, Result&&>);
 
 template<class TaskSource>
-concept Callable_call_task =
-    Invocable_stored_task<TaskSource> &&
-    !std::is_reference_v<std::invoke_result_t<stored_task_t<TaskSource>&>> &&
-    (std::is_void_v<std::invoke_result_t<stored_task_t<TaskSource>&>> ||
-     std::move_constructible<std::invoke_result_t<stored_task_t<TaskSource>&>>);
+concept Blocking_task =
+    Invocable_task<TaskSource> &&
+    Storable_result<std::invoke_result_t<stored_t<TaskSource>&>>;
+
+template<class ReporterSource>
+concept Storable_reporter =
+    std::constructible_from<stored_t<ReporterSource>, ReporterSource&&> &&
+    (std::same_as<stored_t<ReporterSource>, std::nullptr_t> ||
+     std::invocable<stored_t<ReporterSource>&, std::exception_ptr>);
 
 template<class Obj, class Method, class... Args>
 concept Storable_member_call =
@@ -139,7 +167,6 @@ concept Storable_member_call =
     std::derived_from<Obj, QObject> &&
     std::is_member_function_pointer_v<Method> &&
     (std::constructible_from<std::decay_t<Args>, Args&&> && ...) &&
-    (std::move_constructible<std::decay_t<Args>> && ...) &&
     std::invocable<Method, Obj*, std::decay_t<Args>&&...>;
 
 template<class Obj, class Method, class... Args>
@@ -150,118 +177,138 @@ concept Exact_void_member_call =
         void>;
 
 template<class Obj, class Method, class... Args>
-concept Callable_member_call =
+concept Blocking_member_call =
     Storable_member_call<Obj, Method, Args...> &&
-    !std::is_reference_v<
-        std::invoke_result_t<Method, Obj*, std::decay_t<Args>&&...>> &&
-    (std::is_void_v<
-         std::invoke_result_t<Method, Obj*, std::decay_t<Args>&&...>> ||
-     std::move_constructible<
-         std::invoke_result_t<Method, Obj*, std::decay_t<Args>&&...>>);
+    Storable_result<
+        std::invoke_result_t<Method, Obj*, std::decay_t<Args>&&...>>;
 
-template<class Obj, class Method, class... Args>
-auto bind_member_once(Obj* object, Method method, Args&&... args)
+template<class Obj, class Method, class... StoredArgs>
+class Member_task
 {
-    using stored_args_t = std::tuple<std::decay_t<Args>...>;
+public:
+    template<class... Args>
+    explicit Member_task(Obj* object, Method method, Args&&... args)
+        :
+            m_object(object),
+            m_method(method),
+            m_arguments(std::forward<Args>(args)...)
+    {}
 
-    return [object,
-            method,
-            values = stored_args_t(std::forward<Args>(args)...)]()
-               mutable -> decltype(auto)
+    decltype(auto) operator()() &
     {
         return std::apply(
-            [object, method](auto&... values) -> decltype(auto)
+            [this](auto&... arguments) -> decltype(auto)
             {
-                return std::invoke(method, object, std::move(values)...);
+                return std::invoke(
+                    m_method,
+                    m_object,
+                    std::move(arguments)...);
             },
-            values);
-    };
-}
-
-[[nodiscard]] inline bool is_current_thread(const QThread* target_thread) noexcept
-{
-    if (target_thread == nullptr) {
-        return false;
+            m_arguments);
     }
 
-#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
-    return target_thread->isCurrentThread();
-#else
-    // Qt 6.5-6.7 expose no public non-adopting affinity predicate.
-    return QThread::currentThread() == target_thread;
-#endif
-}
-
-enum class Call_state
-{
-    PENDING,
-    COMPLETED,
-    THREW,
+private:
+    Obj* m_object;
+    Method m_method;
+    std::tuple<StoredArgs...> m_arguments;
 };
 
-} // namespace detail
+template<class Obj, class Method, class... Args>
+using member_task_t =
+    Member_task<Obj, Method, std::decay_t<Args>...>;
 
-/**
- * @brief Always enqueue an exact-void task on a QObject's event queue.
- *
- * `QUEUED` reports Qt admission only, never execution. Receiver destruction,
- * explicit event removal, or event-loop shutdown can still cancel accepted
- * work, and this API does not report that later cancellation. The context must
- * remain alive with stable thread affinity from entry through return. The queued
- * task is stored once from the source and invoked as an lvalue. Target
- * exceptions are contained and passed to `reporter` when it is non-null; reporter
- * exceptions are contained as well. Null receivers, missing affinity, storage
- * failure, and Qt rejection return the corresponding non-`QUEUED` result.
- *
- * Task captures, bound member arguments, intermediate and result values,
- * transported exception objects, and any other queued captures must have
- * non-throwing, thread-agnostic destruction and must not depend on a particular
- * thread's TLS. They can be destroyed on the submitting thread, the receiver
- * thread, or a thread removing posted events. `std::exception_ptr` is the
- * intentional cross-thread exception transport; it carries shared ownership of
- * the exception object, not a TLS address or current-thread identity. This
- * raw-pointer contract does not pin receiver lifetime, and no `QPointer`
- * observation can make concurrent submission and destruction safe.
- */
-template<class TaskSource>
-requires detail::Exact_void_task<TaskSource>
-[[nodiscard(
-    "post_with_exception_reporter() reports admission only; queued work can still be cancelled")]]
-Post_result post_with_exception_reporter(
+template<class Reporter>
+[[nodiscard]] bool is_null_reporter(const Reporter& reporter) noexcept
+{
+    if constexpr (std::same_as<Reporter, std::nullptr_t>) {
+        return true;
+    }
+    else if constexpr (std::is_pointer_v<Reporter>) {
+        return reporter == nullptr;
+    }
+    else {
+        return false;
+    }
+}
+
+template<class Task, class Reporter>
+class Post_operation
+{
+public:
+    template<class ReporterSource, class... TaskArgs>
+    explicit Post_operation(
+        std::in_place_t,
+        ReporterSource&& reporter,
+        TaskArgs&&... task_args)
+        :
+            m_task(std::forward<TaskArgs>(task_args)...),
+            m_reporter(std::forward<ReporterSource>(reporter))
+    {}
+
+    void execute() noexcept
+    {
+        try {
+            std::invoke(m_task);
+        }
+        catch (...) {
+            if (is_null_reporter(m_reporter)) {
+                return;
+            }
+
+            if constexpr (!std::same_as<Reporter, std::nullptr_t>) {
+                try {
+                    std::invoke(m_reporter, std::current_exception());
+                }
+                catch (...) {
+                    // No exception may escape through Qt event delivery.
+                }
+            }
+        }
+    }
+
+private:
+    Task m_task;
+    [[no_unique_address]] Reporter m_reporter;
+};
+
+template<class Task, class ReporterSource, class... TaskArgs>
+[[nodiscard]] Post_result post_impl(
     QObject* context,
-    TaskSource&& task_source,
-    Exception_reporter reporter) noexcept
+    ReporterSource&& reporter,
+    TaskArgs&&... task_args) noexcept
 {
     if (context == nullptr) {
         return Post_result::RECEIVER_NULL;
     }
-    if (context->thread() == nullptr) {
-        return Post_result::NO_THREAD_AFFINITY;
+    try {
+        if (context->thread() == nullptr) {
+            return Post_result::NO_THREAD_AFFINITY;
+        }
+    }
+    catch (...) {
+        return Post_result::SUBMISSION_FAILED;
+    }
+
+    using reporter_t = stored_t<ReporterSource>;
+    using operation_t = Post_operation<Task, reporter_t>;
+
+    std::unique_ptr<operation_t> operation;
+    try {
+        operation = std::make_unique<operation_t>(
+            std::in_place,
+            std::forward<ReporterSource>(reporter),
+            std::forward<TaskArgs>(task_args)...);
+    }
+    catch (...) {
+        return Post_result::STORAGE_FAILED;
     }
 
     try {
-        using task_t = detail::stored_task_t<TaskSource>;
-        task_t task(std::forward<TaskSource>(task_source));
-
         const bool accepted = QMetaObject::invokeMethod(
             context,
-            [task = std::move(task), reporter]() mutable noexcept
+            [operation = std::move(operation)]() noexcept
             {
-                try {
-                    std::invoke(task);
-                }
-                catch (...) {
-                    const std::exception_ptr target_exception =
-                        std::current_exception();
-                    if (reporter != nullptr) {
-                        try {
-                            reporter(target_exception);
-                        }
-                        catch (...) {
-                            // Reporter failure must not escape the Qt callback.
-                        }
-                    }
-                }
+                operation->execute();
             },
             Qt::QueuedConnection);
 
@@ -274,309 +321,361 @@ Post_result post_with_exception_reporter(
     }
 }
 
-/**
- * @brief Always enqueue an exact-void task with Qt warning reporting.
- *
- * This overload has the full `post_with_exception_reporter()` admission,
- * lifetime, cancellation, and destruction contract. Target and reporter
- * exceptions never escape the queued Qt callback.
- */
-template<class TaskSource>
-requires detail::Exact_void_task<TaskSource>
-[[nodiscard("vnm::qt::post() reports admission only; queued work can still be cancelled")]]
-Post_result post(QObject* context, TaskSource&& task_source) noexcept
+[[nodiscard]] inline bool is_current_thread(
+    const QThread* target_thread) noexcept
 {
-    return post_with_exception_reporter(
-        context,
-        std::forward<TaskSource>(task_source),
-        detail::report_dispatch_exception);
+    if (target_thread == nullptr) {
+        return false;
+    }
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    return target_thread->isCurrentThread();
+#else
+    return QThread::currentThread() == target_thread;
+#endif
 }
 
-/**
- * @brief Invoke a stored task synchronously on a QObject's affinity thread.
- *
- * The task is stored once before choosing the direct or cross-thread path and
- * is invoked as an lvalue in both paths. The original target exception is
- * propagated. Dispatch failures throw `Dispatch_error`; non-void results are
- * moved to the caller, and reference results are rejected by the constraints.
- *
- * The context must remain alive with stable affinity throughout the call. A
- * cross-thread submission can be rejected or can be cancelled after admission
- * but before execution. Its owner must keep the receiver event loop servicing
- * events until execution or cancellation. This operation is intentionally
- * unbounded; callers must not use it during shutdown unless the owner provides
- * that progress guarantee. Rejection and cancellation throw `Dispatch_error`
- * with `SUBMISSION_FAILED` and `CANCELLED_BEFORE_EXECUTION`, respectively.
- *
- * Task captures, bound member arguments, intermediate and result values,
- * transported exception objects, and any other queued captures must have
- * non-throwing, thread-agnostic destruction and must not depend on a particular
- * thread's TLS. They can be destroyed on the calling thread, the receiver
- * thread, or a thread removing posted events. `std::exception_ptr` is the
- * intentional cross-thread exception transport; it carries shared ownership of
- * the exception object, not a TLS address or current-thread identity.
- */
-template<class TaskSource>
-requires detail::Callable_call_task<TaskSource>
-[[nodiscard]] auto call(QObject* context, TaskSource&& task_source)
-    -> std::invoke_result_t<detail::stored_task_t<TaskSource>&>
+template<class Result>
+class Call_result
 {
-    using task_t   = detail::stored_task_t<TaskSource>;
-    using result_t = std::invoke_result_t<task_t&>;
+public:
+    template<class Value>
+    void emplace(Value&& value)
+    {
+        m_value.emplace(std::forward<Value>(value));
+    }
+
+    [[nodiscard]] Result take()
+    {
+        if (!m_value) {
+            throw std::logic_error(
+                "Qt blocking dispatch completed without a result.");
+        }
+        return Result(std::move(*m_value));
+    }
+
+private:
+    std::optional<Result> m_value;
+};
+
+template<>
+class Call_result<void>
+{
+public:
+    void take() const noexcept
+    {}
+};
+
+template<class Task, class Result>
+class Call_operation
+{
+public:
+    template<class... TaskArgs>
+    explicit Call_operation(std::in_place_t, TaskArgs&&... task_args)
+        :
+            m_task(std::in_place, std::forward<TaskArgs>(task_args)...)
+    {}
+
+    void execute() noexcept
+    {
+        try {
+            if (!m_task) {
+                throw std::logic_error(
+                    "Qt blocking dispatch started without a task.");
+            }
+
+            if constexpr (std::is_void_v<Result>) {
+                std::invoke(*m_task);
+            }
+            else {
+                m_result.emplace(std::invoke(*m_task));
+            }
+        }
+        catch (...) {
+            m_exception = std::current_exception();
+        }
+
+        // Task destruction is part of synchronous completion.
+        m_task.reset();
+    }
+
+    void cancel() noexcept
+    {
+        // Called before an abandoned promise wakes the waiting thread.
+        m_task.reset();
+    }
+
+    [[nodiscard]] Result take()
+    {
+        if (m_exception) {
+            std::rethrow_exception(m_exception);
+        }
+
+        if constexpr (std::is_void_v<Result>) {
+            m_result.take();
+            return;
+        }
+        else {
+            return m_result.take();
+        }
+    }
+
+private:
+    std::optional<Task> m_task;
+    Call_result<Result> m_result;
+    std::exception_ptr m_exception;
+};
+
+/**
+ * Move-only queued functor. If Qt destroys it without invoking it, its promise
+ * is abandoned and the waiting future becomes ready with `broken_promise`.
+ */
+template<class Operation>
+class Call_event
+{
+public:
+    explicit Call_event(std::shared_ptr<Operation> operation)
+        :
+            m_operation(std::move(operation))
+    {}
+
+    Call_event(const Call_event&) = delete;
+    Call_event& operator=(const Call_event&) = delete;
+
+    Call_event(Call_event&& other) noexcept
+        :
+            m_operation(std::move(other.m_operation)),
+            m_completion(std::move(other.m_completion)),
+            m_armed(std::exchange(other.m_armed, false))
+    {}
+
+    Call_event& operator=(Call_event&&) = delete;
+
+    ~Call_event() noexcept
+    {
+        if (m_armed && m_operation) {
+            // Promise destruction follows this body, so task destruction is
+            // sequenced before broken_promise wakes the caller.
+            m_operation->cancel();
+            m_operation.reset();
+        }
+    }
+
+    [[nodiscard]] std::future<void> get_future()
+    {
+        return m_completion.get_future();
+    }
+
+    void operator()() noexcept
+    {
+        m_operation->execute();
+        m_operation.reset();
+        m_armed = false;
+        try {
+            m_completion.set_value();
+        }
+        catch (...) {
+            // Promise destruction still releases the waiter. Nothing may
+            // escape through Qt event delivery.
+        }
+    }
+
+private:
+    std::shared_ptr<Operation> m_operation;
+    std::promise<void> m_completion;
+    bool m_armed = true;
+};
+
+template<class Task, class... TaskArgs>
+[[nodiscard]] auto blocking_call_impl(
+    QObject* context,
+    TaskArgs&&... task_args)
+    -> std::invoke_result_t<Task&>
+{
+    using result_t = std::invoke_result_t<Task&>;
 
     if (context == nullptr) {
         throw Dispatch_error(
             Dispatch_errc::RECEIVER_NULL,
             "Qt dispatch receiver is null.");
     }
-    if (context->thread() == nullptr) {
+
+    QThread* const target_thread = context->thread();
+    if (target_thread == nullptr) {
         throw Dispatch_error(
             Dispatch_errc::NO_THREAD_AFFINITY,
             "Qt dispatch receiver has no thread affinity.");
     }
 
-    std::optional<task_t> task;
-    try {
-        task.emplace(std::forward<TaskSource>(task_source));
-    }
-    catch (...) {
-        throw Dispatch_error(
-            Dispatch_errc::SUBMISSION_FAILED,
-            "Qt dispatch task storage failed.");
-    }
-
-    if (detail::is_current_thread(context->thread())) {
+    // Setup failures retain their original exception type.
+    if (is_current_thread(target_thread)) {
+        Task task(std::forward<TaskArgs>(task_args)...);
         if constexpr (std::is_void_v<result_t>) {
-            std::invoke(*task);
+            std::invoke(task);
             return;
         }
         else {
-            return std::invoke(*task);
+            return std::invoke(task);
         }
     }
 
-    detail::Call_state call_state = detail::Call_state::PENDING;
-    std::exception_ptr target_exception;
-    [[maybe_unused]] std::conditional_t<
-        std::is_void_v<result_t>,
-        char,
-        std::optional<result_t>> result{};
+    using operation_t = Call_operation<Task, result_t>;
+    auto operation = std::make_shared<operation_t>(
+        std::in_place,
+        std::forward<TaskArgs>(task_args)...);
 
-    bool accepted = false;
-    try {
-        accepted = QMetaObject::invokeMethod(
-            context,
-            [task = std::move(*task),
-             &call_state,
-             &target_exception,
-             &result]() mutable noexcept
-            {
-                try {
-                    if constexpr (std::is_void_v<result_t>) {
-                        std::invoke(task);
-                    }
-                    else {
-                        result.emplace(std::invoke(task));
-                    }
-                    call_state = detail::Call_state::COMPLETED;
-                }
-                catch (...) {
-                    target_exception = std::current_exception();
-                    call_state = detail::Call_state::THREW;
-                }
-            },
-            Qt::BlockingQueuedConnection);
-    }
-    catch (...) {
-        throw Dispatch_error(
-            Dispatch_errc::SUBMISSION_FAILED,
-            "Qt dispatch submission failed.");
-    }
+    Call_event<operation_t> event(operation);
+    std::future<void> completion = event.get_future();
+
+    const bool accepted = QMetaObject::invokeMethod(
+        context,
+        std::move(event),
+        Qt::QueuedConnection);
 
     if (!accepted) {
         throw Dispatch_error(
             Dispatch_errc::SUBMISSION_FAILED,
             "Qt rejected the blocking dispatch.");
     }
-    if (call_state == detail::Call_state::PENDING) {
-        throw Dispatch_error(
-            Dispatch_errc::CANCELLED_BEFORE_EXECUTION,
-            "Qt dispatch was cancelled before execution.");
-    }
-    if (call_state == detail::Call_state::THREW) {
-        if (!target_exception) {
-            throw Dispatch_error(
-                Dispatch_errc::SUBMISSION_FAILED,
-                "Qt dispatch failed without an exception.");
-        }
-        std::rethrow_exception(target_exception);
-    }
-
-    if constexpr (!std::is_void_v<result_t>) {
-        if (!result) {
-            throw Dispatch_error(
-                Dispatch_errc::SUBMISSION_FAILED,
-                "Qt dispatch completed without a result.");
-        }
-        return std::move(*result);
-    }
-}
-
-namespace detail {
-
-template<class Obj, class Method, class... Args>
-requires Exact_void_member_call<Obj, Method, Args...>
-[[nodiscard]] Post_result post_member_with_exception_reporter(
-    Obj* object,
-    Method method,
-    Exception_reporter reporter,
-    Args&&... args) noexcept
-{
-    if (object == nullptr) {
-        return Post_result::RECEIVER_NULL;
-    }
-    if (object->thread() == nullptr) {
-        return Post_result::NO_THREAD_AFFINITY;
-    }
 
     try {
-        auto task = bind_member_once(
-            object,
-            method,
-            std::forward<Args>(args)...);
-        return vnm::qt::post_with_exception_reporter(
-            static_cast<QObject*>(object),
-            std::move(task),
-            reporter);
+        completion.get();
     }
-    catch (...) {
-        return Post_result::SUBMISSION_FAILED;
+    catch (const std::future_error& error) {
+        if (error.code() ==
+            std::make_error_code(std::future_errc::broken_promise)) {
+            throw Dispatch_error(
+                Dispatch_errc::CANCELLED_BEFORE_EXECUTION,
+                "Qt dispatch was cancelled before execution.");
+        }
+        throw;
+    }
+
+    if constexpr (std::is_void_v<result_t>) {
+        operation->take();
+        return;
+    }
+    else {
+        return operation->take();
     }
 }
 
 } // namespace detail
 
 /**
- * @brief Enqueue a typed exact-void member call using owned arguments.
+ * Always enqueue an exact-void task with an explicit exception reporter.
  *
- * Ordinary arguments are decayed, owned, and consumed once. Use `std::ref()`
- * explicitly for a referenced argument; its referent must outlive execution or
- * cancellation, and cross-thread access remains the caller's responsibility.
- * `QUEUED` reports Qt admission only, never execution. Receiver destruction,
- * explicit event removal, or event-loop shutdown can still cancel accepted
- * work, and this API does not report that later cancellation. The receiver must
- * remain alive with stable thread affinity from entry through return. Null
- * receivers, missing affinity, argument storage failure, and Qt rejection return
- * the corresponding non-`QUEUED` result. Target exceptions are contained and
- * passed to the explicit reporter when it is non-null; reporter exceptions are
- * contained as well.
- *
- * Task captures, bound member arguments, intermediate and result values,
- * transported exception objects, and any other queued captures must have
- * non-throwing, thread-agnostic destruction and must not depend on a particular
- * thread's TLS. They can be destroyed on the submitting thread, the receiver
- * thread, or a thread removing posted events. `std::exception_ptr` is the
- * intentional cross-thread exception transport; it carries shared ownership of
- * the exception object, not a TLS address or current-thread identity. This
- * raw-pointer contract does not pin receiver lifetime, so concurrent submission
- * and destruction are unsafe.
+ * `QUEUED` means that Qt accepted the event, not that it executed. Target and
+ * reporter exceptions are contained. Passing `nullptr` or a null function
+ * pointer suppresses target-exception reporting; `ignore_exceptions` is the
+ * clearer named policy. Task/reporter construction or allocation failure
+ * returns `STORAGE_FAILED`.
  */
-template<class Obj, class Method, class... Args>
-requires detail::Exact_void_member_call<Obj, Method, Args...>
+template<class TaskSource, class ReporterSource>
+requires
+    detail::Exact_void_task<TaskSource> &&
+    detail::Storable_reporter<ReporterSource>
 [[nodiscard(
-    "post_with_exception_reporter() reports admission only; queued work can still be cancelled")]]
+    "post_with_exception_reporter() reports admission only; posted work can still be cancelled")]]
+Post_result post_with_exception_reporter(
+    QObject* context,
+    TaskSource&& task,
+    ReporterSource&& reporter) noexcept
+{
+    using task_t = detail::stored_t<TaskSource>;
+    return detail::post_impl<task_t>(
+        context,
+        std::forward<ReporterSource>(reporter),
+        std::forward<TaskSource>(task));
+}
+
+/** Always enqueue an exact-void task and report target exceptions via qWarning(). */
+template<class TaskSource>
+requires detail::Exact_void_task<TaskSource>
+[[nodiscard(
+    "vnm::qt::post() reports admission only; posted work can still be cancelled")]]
+Post_result post(QObject* context, TaskSource&& task) noexcept
+{
+    return post_with_exception_reporter(
+        context,
+        std::forward<TaskSource>(task),
+        detail::qt_warning_reporter);
+}
+
+/**
+ * Invoke a task synchronously according to the receiver's thread affinity.
+ *
+ * Same-thread work executes inline. Cross-thread work is queued and the caller
+ * waits without a timeout. The original setup, target, result-storage, or
+ * result-transfer exception is propagated. Destruction or removal of the
+ * queued event before execution throws
+ * `Dispatch_error{CANCELLED_BEFORE_EXECUTION}`.
+ */
+template<class TaskSource>
+requires detail::Blocking_task<TaskSource>
+[[nodiscard]] auto blocking_call(QObject* context, TaskSource&& task)
+    -> std::invoke_result_t<detail::stored_t<TaskSource>&>
+{
+    using task_t = detail::stored_t<TaskSource>;
+    return detail::blocking_call_impl<task_t>(
+        context,
+        std::forward<TaskSource>(task));
+}
+
+/** Enqueue a typed exact-void member call with owned, one-shot arguments. */
+template<class Obj, class Method, class ReporterSource, class... Args>
+requires
+    detail::Exact_void_member_call<Obj, Method, Args...> &&
+    detail::Storable_reporter<ReporterSource>
+[[nodiscard(
+    "post_with_exception_reporter() reports admission only; posted work can still be cancelled")]]
 Post_result post_with_exception_reporter(
     Obj* object,
     Method method,
-    Exception_reporter reporter,
+    ReporterSource&& reporter,
     Args&&... args) noexcept
 {
-    return detail::post_member_with_exception_reporter(
+    using task_t = detail::member_task_t<Obj, Method, Args...>;
+    return detail::post_impl<task_t>(
+        static_cast<QObject*>(object),
+        std::forward<ReporterSource>(reporter),
         object,
         method,
-        reporter,
         std::forward<Args>(args)...);
 }
 
 /**
- * @brief Enqueue a typed exact-void member call with Qt warning reporting.
- *
- * This overload has the full `post_with_exception_reporter()` admission,
- * lifetime, cancellation, argument-ownership, and destruction contract.
- * Target and reporter exceptions never escape the queued Qt callback.
+ * Enqueue a typed exact-void member call with owned, one-shot arguments and
+ * qWarning() target-exception reporting.
  */
 template<class Obj, class Method, class... Args>
 requires detail::Exact_void_member_call<Obj, Method, Args...>
-[[nodiscard("vnm::qt::post() reports admission only; queued work can still be cancelled")]]
+[[nodiscard(
+    "vnm::qt::post() reports admission only; posted work can still be cancelled")]]
 Post_result post(Obj* object, Method method, Args&&... args) noexcept
 {
     return post_with_exception_reporter(
         object,
         method,
-        detail::report_dispatch_exception,
+        detail::qt_warning_reporter,
         std::forward<Args>(args)...);
 }
 
-/**
- * @brief Invoke a typed member call synchronously using owned arguments.
- *
- * Ordinary arguments are decayed, owned, and consumed once. Use `std::ref()`
- * for deliberate reference semantics; the referent must outlive this call and
- * any cross-thread access must be synchronized by the caller. The receiver must
- * remain alive with stable affinity throughout the call. A cross-thread
- * submission can be rejected or can be cancelled after admission but before
- * execution, and the owner must keep the receiver event loop servicing events
- * until execution or cancellation. The wait is intentionally unbounded.
- * Rejection and cancellation throw `Dispatch_error` with `SUBMISSION_FAILED`
- * and `CANCELLED_BEFORE_EXECUTION`, respectively.
- *
- * Task captures, bound member arguments, intermediate and result values,
- * transported exception objects, and any other queued captures must have
- * non-throwing, thread-agnostic destruction and must not depend on a particular
- * thread's TLS. They can be destroyed on the calling thread, the receiver
- * thread, or a thread removing posted events. `std::exception_ptr` is the
- * intentional cross-thread exception transport; it carries shared ownership of
- * the exception object, not a TLS address or current-thread identity.
- */
+/** Invoke a typed member call synchronously with owned, one-shot arguments. */
 template<class Obj, class Method, class... Args>
-requires detail::Callable_member_call<Obj, Method, Args...>
-[[nodiscard]] decltype(auto) call(
+requires detail::Blocking_member_call<Obj, Method, Args...>
+[[nodiscard]] auto blocking_call(
     Obj* object,
     Method method,
     Args&&... args)
+    -> std::invoke_result_t<Method, Obj*, std::decay_t<Args>&&...>
 {
-    if (object == nullptr) {
-        throw Dispatch_error(
-            Dispatch_errc::RECEIVER_NULL,
-            "Qt dispatch receiver is null.");
-    }
-    if (object->thread() == nullptr) {
-        throw Dispatch_error(
-            Dispatch_errc::NO_THREAD_AFFINITY,
-            "Qt dispatch receiver has no thread affinity.");
-    }
-
-    using task_t = decltype(detail::bind_member_once(
+    using task_t = detail::member_task_t<Obj, Method, Args...>;
+    return detail::blocking_call_impl<task_t>(
+        static_cast<QObject*>(object),
         object,
         method,
-        std::forward<Args>(args)...));
-
-    std::optional<task_t> task;
-    try {
-        task.emplace(detail::bind_member_once(
-            object,
-            method,
-            std::forward<Args>(args)...));
-    }
-    catch (...) {
-        throw Dispatch_error(
-            Dispatch_errc::SUBMISSION_FAILED,
-            "Qt dispatch member task storage failed.");
-    }
-
-    return vnm::qt::call(
-        static_cast<QObject*>(object),
-        std::move(*task));
+        std::forward<Args>(args)...);
 }
 
 } // namespace qt

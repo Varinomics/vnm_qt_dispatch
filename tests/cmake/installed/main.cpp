@@ -8,14 +8,16 @@ int main(int argc, char** argv)
 {
     QCoreApplication application(argc, argv);
 
-    const int result = vnm::qt::call(
+    const int result = vnm::qt::blocking_call(
         &application,
         []()
         {
             return 73;
         });
     if (result != 73) {
-        std::fputs("The installed consumer call returned the wrong value.\n", stderr);
+        std::fputs(
+            "The installed consumer blocking call returned the wrong value.\n",
+            stderr);
         return 1;
     }
 

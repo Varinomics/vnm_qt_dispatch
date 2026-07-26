@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(vnm_qt_dispatch LANGUAGES CXX VERSION 1.0.0)
+project(vnm_qt_dispatch LANGUAGES CXX VERSION 2.0.0)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)

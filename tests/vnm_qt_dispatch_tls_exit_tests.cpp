@@ -64,7 +64,6 @@ bool require(bool condition, const char* message, Worker_result* result)
     result->error = message;
     return false;
 }
-
 int run_child(QCoreApplication* application)
 {
     Dispatch_target target(std::this_thread::get_id());
@@ -75,7 +74,7 @@ int run_child(QCoreApplication* application)
         {
             try {
                 for (int iteration = 0; iteration < k_dispatch_iterations; ++iteration) {
-                    const int call_result = vnm::qt::call(
+                    const int call_result = vnm::qt::blocking_call(
                         &target,
                         [&target, iteration]()
                         {
@@ -84,7 +83,7 @@ int run_child(QCoreApplication* application)
                         });
                     if (!require(
                             call_result == iteration,
-                            "call() returned the wrong value.",
+                            "blocking_call() returned the wrong value.",
                             &worker_result)) {
                         break;
                     }
@@ -96,12 +95,12 @@ int run_child(QCoreApplication* application)
                             nullptr);
                     if (!require(
                             member_post_result == vnm::qt::Post_result::QUEUED,
-                            "The canonical member post was not queued.",
+                            "The canonical member post was not accepted.",
                             &worker_result)) {
                         break;
                     }
 
-                    vnm::qt::call(
+                    vnm::qt::blocking_call(
                         &target,
                         &Dispatch_target::record);
 
@@ -115,12 +114,12 @@ int run_child(QCoreApplication* application)
                             nullptr);
                     if (!require(
                             task_post_result == vnm::qt::Post_result::QUEUED,
-                            "The canonical task post was not queued.",
+                            "The canonical task post was not accepted.",
                             &worker_result)) {
                         break;
                     }
 
-                    vnm::qt::call(
+                    vnm::qt::blocking_call(
                         &target,
                         [&target]()
                         {
@@ -129,7 +128,7 @@ int run_child(QCoreApplication* application)
                 }
 
                 if (worker_result.error.empty()) {
-                    const int observed_count = vnm::qt::call(
+                    const int observed_count = vnm::qt::blocking_call(
                         &target,
                         [&target]()
                         {

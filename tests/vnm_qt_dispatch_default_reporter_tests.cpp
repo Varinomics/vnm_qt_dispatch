@@ -143,7 +143,7 @@ post_target_exceptions_are_reported_and_event_loop_survives()
     QCOMPARE(callable_result, vnm::qt::Post_result::QUEUED);
     QCOMPARE(member_result, vnm::qt::Post_result::QUEUED);
 
-    const int call_result = vnm::qt::call(
+    const int call_result = vnm::qt::blocking_call(
         worker.receiver(),
         []() {
             return 31;

@@ -132,7 +132,7 @@ endfunction()
 
 configure_consumer(
     "${test_binary_dir}"
-    "1"
+    "2"
     FALSE
     configure_result
     configure_log)
@@ -165,7 +165,7 @@ endif()
 
 configure_consumer(
     "${incompatible_binary_dir}"
-    "2.0"
+    "3.0"
     TRUE
     incompatible_configure_result
     incompatible_configure_log)
