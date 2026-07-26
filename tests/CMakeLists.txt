@@ -11,6 +11,13 @@ function(vnm_qt_dispatch_add_qt_test target source)
     )
     add_test(NAME ${target} COMMAND ${target})
     set_tests_properties(${target} PROPERTIES TIMEOUT 60)
+    if(WIN32)
+        set_tests_properties(
+            ${target}
+            PROPERTIES
+                ENVIRONMENT_MODIFICATION
+                    "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    endif()
 endfunction()
 
 vnm_qt_dispatch_add_qt_test(
@@ -38,6 +45,13 @@ set_tests_properties(
     vnm_qt_dispatch_tls_exit_tests
     PROPERTIES
         TIMEOUT 120)
+if(WIN32)
+    set_tests_properties(
+        vnm_qt_dispatch_tls_exit_tests
+        PROPERTIES
+            ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+endif()
 
 set(vnm_qt_dispatch_nested_test_arguments
     "-DPROVIDER_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
@@ -49,6 +63,8 @@ set(vnm_qt_dispatch_nested_test_arguments
     "-DTEST_CMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
     "-DTEST_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
     "-DTEST_QT_DIR=${Qt6_DIR}"
+    "-DTEST_INSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
+    "-DTEST_INSTALL_DATADIR=${CMAKE_INSTALL_DATADIR}"
 )
 
 add_test(
@@ -60,6 +76,13 @@ set_tests_properties(
     vnm_qt_dispatch_subproject_consumer
     PROPERTIES
         TIMEOUT 300)
+if(WIN32)
+    set_tests_properties(
+        vnm_qt_dispatch_subproject_consumer
+        PROPERTIES
+            ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+endif()
 
 add_test(
     NAME vnm_qt_dispatch_installed_consumer
@@ -71,3 +94,10 @@ set_tests_properties(
     PROPERTIES
         TIMEOUT 300
         RUN_SERIAL TRUE)
+if(WIN32)
+    set_tests_properties(
+        vnm_qt_dispatch_installed_consumer
+        PROPERTIES
+            ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+endif()

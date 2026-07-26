@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 3.22)
 
 project(vnm_qt_dispatch LANGUAGES CXX VERSION 1.0.0)
 
@@ -35,6 +35,9 @@ install(TARGETS vnm_qt_dispatch
 )
 install(DIRECTORY include/
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+)
+install(FILES LICENSE
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/vnm_qt_dispatch"
 )
 install(EXPORT vnm_qt_dispatchTargets
     FILE vnm_qt_dispatchTargets.cmake
