@@ -1,0 +1,9 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+find_dependency(Qt6 @VNM_QT_DISPATCH_QT_MIN_VERSION@ COMPONENTS Core)
+
+include("${CMAKE_CURRENT_LIST_DIR}/vnm_qt_dispatchTargets.cmake")
+
+check_required_components(vnm_qt_dispatch)
