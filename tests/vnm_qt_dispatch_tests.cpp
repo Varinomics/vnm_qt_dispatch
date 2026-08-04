@@ -1430,6 +1430,23 @@ private Q_SLOTS:
 
         QVERIFY(caught_receiver_error);
         QCOMPARE(observer_count, 0);
+
+        QObject context;
+        Throwing_move_void_task throwing_task;
+        bool caught_storage_error = false;
+        try {
+            vnm::qt::blocking_call_with_submission_observer(
+                &context,
+                std::move(throwing_task),
+                [&]() noexcept { ++observer_count; });
+        }
+        catch (const std::runtime_error& error) {
+            caught_storage_error =
+                std::string(error.what()) == "capture failed";
+        }
+
+        QVERIFY(caught_storage_error);
+        QCOMPARE(observer_count, 0);
     }
 
     void blocking_call_submission_observer_precedes_exact_cancellation()

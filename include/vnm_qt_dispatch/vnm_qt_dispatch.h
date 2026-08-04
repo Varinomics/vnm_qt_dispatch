@@ -112,14 +112,6 @@ inline constexpr Ignore_exceptions ignore_exceptions{};
 
 namespace detail {
 
-// Keep source compatibility for existing consumers while they migrate to the
-// public spelling above. New code should call vnm::qt::is_current_thread().
-[[nodiscard]] inline bool is_current_thread(
-    const QThread* target_thread) noexcept
-{
-    return vnm::qt::is_current_thread(target_thread);
-}
-
 struct Qt_warning_reporter
 {
     void operator()(std::exception_ptr exception) const noexcept
