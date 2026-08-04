@@ -155,6 +155,20 @@ concept Blocking_task =
     Invocable_task<TaskSource> &&
     Storable_result<std::invoke_result_t<stored_t<TaskSource>&>>;
 
+template<class Observer>
+concept Submission_observer =
+    std::invocable<Observer&> &&
+    std::same_as<std::invoke_result_t<Observer&>, void> &&
+    std::is_nothrow_invocable_v<Observer&>;
+
+struct No_submission_observer
+{
+    void operator()() const noexcept
+    {}
+};
+
+inline constexpr No_submission_observer no_submission_observer{};
+
 template<class ReporterSource>
 concept Storable_reporter =
     std::constructible_from<stored_t<ReporterSource>, ReporterSource&&> &&
@@ -486,9 +500,11 @@ private:
     bool m_armed = true;
 };
 
-template<class Task, class... TaskArgs>
+template<class Task, class SubmissionObserver, class... TaskArgs>
+requires Submission_observer<SubmissionObserver>
 [[nodiscard]] auto blocking_call_impl(
     QObject* context,
+    SubmissionObserver&& submission_observer,
     TaskArgs&&... task_args)
     -> std::invoke_result_t<Task&>
 {
@@ -510,6 +526,7 @@ template<class Task, class... TaskArgs>
     // Setup failures retain their original exception type.
     if (is_current_thread(target_thread)) {
         Task task(std::forward<TaskArgs>(task_args)...);
+        std::invoke(submission_observer);
         if constexpr (std::is_void_v<result_t>) {
             std::invoke(task);
             return;
@@ -537,6 +554,8 @@ template<class Task, class... TaskArgs>
             Dispatch_errc::SUBMISSION_FAILED,
             "Qt rejected the blocking dispatch.");
     }
+
+    std::invoke(submission_observer);
 
     try {
         completion.get();
@@ -619,6 +638,32 @@ requires detail::Blocking_task<TaskSource>
     using task_t = detail::stored_t<TaskSource>;
     return detail::blocking_call_impl<task_t>(
         context,
+        detail::no_submission_observer,
+        std::forward<TaskSource>(task));
+}
+
+/**
+ * Invoke a task synchronously and observe the point when dispatch is committed.
+ *
+ * The noexcept observer runs on the calling thread. Same-thread calls invoke it
+ * immediately before the task. Cross-thread calls invoke it after Qt accepts
+ * the queued event and before waiting for completion. It is not invoked when
+ * receiver inspection, task storage, or event submission fails.
+ */
+template<class TaskSource, class SubmissionObserver>
+requires
+    detail::Blocking_task<TaskSource> &&
+    detail::Submission_observer<SubmissionObserver>
+[[nodiscard]] auto blocking_call_with_submission_observer(
+    QObject* context,
+    TaskSource&& task,
+    SubmissionObserver&& submission_observer)
+    -> std::invoke_result_t<detail::stored_t<TaskSource>&>
+{
+    using task_t = detail::stored_t<TaskSource>;
+    return detail::blocking_call_impl<task_t>(
+        context,
+        std::forward<SubmissionObserver>(submission_observer),
         std::forward<TaskSource>(task));
 }
 
@@ -673,6 +718,7 @@ requires detail::Blocking_member_call<Obj, Method, Args...>
     using task_t = detail::member_task_t<Obj, Method, Args...>;
     return detail::blocking_call_impl<task_t>(
         static_cast<QObject*>(object),
+        detail::no_submission_observer,
         object,
         method,
         std::forward<Args>(args)...);

@@ -71,6 +71,11 @@ event removal.
 
 ```cpp
 decltype(auto) blocking_call(QObject* receiver, Task&& task);
+
+decltype(auto) blocking_call_with_submission_observer(
+    QObject* receiver,
+    Task&& task,
+    SubmissionObserver&& submission_observer);
 ```
 
 If the receiver belongs to the calling thread, the stored task executes inline.
@@ -79,6 +84,14 @@ Non-reference results, including move-only results, are supported. Task setup,
 affinity inspection, target execution, result storage, result transfer, and
 exceptions thrown by Qt while preparing submission retain their original types.
 A `false` return from Qt is mapped to `Dispatch_errc::SUBMISSION_FAILED`.
+
+`blocking_call_with_submission_observer()` exposes the exact point when the
+call can no longer fail before dispatch. Its noexcept observer runs on the
+calling thread immediately before same-thread execution, or after Qt accepts a
+cross-thread event and before the caller waits. Setup and submission failures do
+not invoke it. This lets lifecycle owners close admission, wait until every
+admitted caller has either submitted or withdrawn, and cancel accepted events
+without polling the receiver queue.
 
 Dispatch-state failures throw `vnm::qt::Dispatch_error` with one of:
 

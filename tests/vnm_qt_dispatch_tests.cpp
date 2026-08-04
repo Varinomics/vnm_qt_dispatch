@@ -170,6 +170,18 @@ struct Explicit_move_result_task
     }
 };
 
+struct Noexcept_submission_observer
+{
+    void operator()() const noexcept
+    {}
+};
+
+struct Throwing_submission_observer
+{
+    void operator()() const
+    {}
+};
+
 class Destruction_probe
 {
 public:
@@ -375,6 +387,15 @@ concept Can_blocking_call_rvalue_task = requires(QObject* context)
     vnm::qt::blocking_call(context, std::declval<Task&&>());
 };
 
+template<class Observer>
+concept Can_observe_blocking_call_submission = requires(QObject* context)
+{
+    vnm::qt::blocking_call_with_submission_observer(
+        context,
+        Exact_void_lvalue_task{},
+        std::declval<Observer&&>());
+};
+
 static_assert(Can_post_rvalue_task<Exact_void_lvalue_task>);
 static_assert(Can_post_lvalue_task<Exact_void_lvalue_task>);
 static_assert(!Can_post_rvalue_task<Nonvoid_lvalue_task>);
@@ -391,6 +412,8 @@ static_assert(Can_blocking_call_rvalue_task<Explicit_move_lvalue_task>);
 static_assert(Can_blocking_call_rvalue_task<Explicit_move_result_task>);
 static_assert(!Can_blocking_call_rvalue_task<Rvalue_only_void_task>);
 static_assert(!Can_blocking_call_rvalue_task<Throwing_destructor_task>);
+static_assert(Can_observe_blocking_call_submission<Noexcept_submission_observer>);
+static_assert(!Can_observe_blocking_call_submission<Throwing_submission_observer>);
 
 class Dispatch_target : public QObject
 {
@@ -1358,6 +1381,97 @@ private Q_SLOTS:
         QVERIFY(!caught_unexpected_exception);
         QVERIFY(!callable_executed.load(std::memory_order_acquire));
         QVERIFY(task_destroyed.load(std::memory_order_acquire));
+    }
+
+    void blocking_call_submission_observer_marks_inline_execution()
+    {
+        QObject context;
+        int ordered_step = 0;
+        bool task_saw_observer = false;
+
+        const int result =
+            vnm::qt::blocking_call_with_submission_observer(
+                &context,
+                [&]() {
+                    task_saw_observer = ordered_step == 1;
+                    ordered_step = 2;
+                    return 37;
+                },
+                [&]() noexcept { ordered_step = 1; });
+
+        QCOMPARE(result, 37);
+        QCOMPARE(ordered_step, 2);
+        QVERIFY(task_saw_observer);
+    }
+
+    void blocking_call_submission_observer_skips_setup_failure()
+    {
+        int observer_count = 0;
+        bool caught_receiver_error = false;
+        try {
+            vnm::qt::blocking_call_with_submission_observer(
+                static_cast<QObject*>(nullptr),
+                []() {},
+                [&]() noexcept { ++observer_count; });
+        }
+        catch (const vnm::qt::Dispatch_error& error) {
+            caught_receiver_error =
+                error.code() == vnm::qt::Dispatch_errc::RECEIVER_NULL;
+        }
+
+        QVERIFY(caught_receiver_error);
+        QCOMPARE(observer_count, 0);
+    }
+
+    void blocking_call_submission_observer_precedes_exact_cancellation()
+    {
+        QSemaphore submission_observed;
+        std::atomic_bool callable_executed = false;
+        bool caught_cancellation = false;
+        bool caught_unexpected_exception = false;
+        Scoped_blocked_worker_target worker;
+        QVERIFY(worker.block_event_loop());
+
+        std::thread caller([&]() {
+            try {
+                vnm::qt::blocking_call_with_submission_observer(
+                    worker.target(),
+                    [&]() {
+                        callable_executed.store(
+                            true,
+                            std::memory_order_release);
+                    },
+                    [&]() noexcept { submission_observed.release(); });
+            }
+            catch (const vnm::qt::Dispatch_error& error) {
+                caught_cancellation =
+                    error.code() ==
+                    vnm::qt::Dispatch_errc::CANCELLED_BEFORE_EXECUTION;
+            }
+            catch (...) {
+                caught_unexpected_exception = true;
+            }
+        });
+
+        const bool submitted =
+            submission_observed.tryAcquire(1, ASYNC_TIMEOUT_MS);
+        if (submitted) {
+            QCoreApplication::removePostedEvents(
+                worker.target(),
+                QEvent::MetaCall);
+        }
+        else {
+            worker.release_gate();
+        }
+        caller.join();
+        worker.release_gate();
+
+        QVERIFY2(
+            submitted,
+            "blocking_call() did not report accepted event submission.");
+        QVERIFY(caught_cancellation);
+        QVERIFY(!caught_unexpected_exception);
+        QVERIFY(!callable_executed.load(std::memory_order_acquire));
     }
 
     void blocking_call_nonvoid_callable_reports_typed_cancellation()
