@@ -743,6 +743,15 @@ class Vnm_qt_dispatch_base_tests : public QObject
     Q_OBJECT
 
 private Q_SLOTS:
+    void current_thread_query_is_public_and_exact()
+    {
+        QThread other_thread;
+
+        QVERIFY(vnm::qt::is_current_thread(QThread::currentThread()));
+        QVERIFY(!vnm::qt::is_current_thread(&other_thread));
+        QVERIFY(!vnm::qt::is_current_thread(nullptr));
+    }
+
     void same_thread_post_is_always_deferred()
     {
         std::atomic_bool executed = false;
@@ -1565,6 +1574,7 @@ private Q_SLOTS:
     void blocking_call_reports_receiver_destruction_cancellation()
     {
         QSemaphore task_stored;
+        QSemaphore submission_observed;
         std::atomic_bool task_executed = false;
         std::atomic_bool task_destroyed = false;
         std::atomic_bool receiver_destroyed = false;
@@ -1597,7 +1607,10 @@ private Q_SLOTS:
             &task_destroyed);
         std::thread caller([&]() {
             try {
-                vnm::qt::blocking_call(target, std::move(task));
+                vnm::qt::blocking_call_with_submission_observer(
+                    target,
+                    std::move(task),
+                    [&]() noexcept { submission_observed.release(); });
             }
             catch (const vnm::qt::Dispatch_error& error) {
                 caught_cancellation =
@@ -1611,15 +1624,13 @@ private Q_SLOTS:
 
         const bool stored =
             task_stored.tryAcquire(1, ASYNC_TIMEOUT_MS);
-        if (stored) {
-            // The receiver thread remains gated while the caller completes the
-            // immediately following Qt submission.
-            QTest::qWait(50);
-        }
+        const bool submitted = stored &&
+            submission_observed.tryAcquire(1, ASYNC_TIMEOUT_MS);
         worker.release_gate();
         caller.join();
 
         QVERIFY2(stored, "blocking_call() did not finish storing its task.");
+        QVERIFY2(submitted, "blocking_call() did not report accepted event submission.");
         QVERIFY(receiver_destroyed.load(std::memory_order_acquire));
         QVERIFY(caught_cancellation);
         QVERIFY(!caught_unexpected_exception);

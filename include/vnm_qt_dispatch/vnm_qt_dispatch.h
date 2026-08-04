@@ -95,7 +95,30 @@ struct Ignore_exceptions
 
 inline constexpr Ignore_exceptions ignore_exceptions{};
 
+/** Returns whether the caller is currently executing on `target_thread`. */
+[[nodiscard]] inline bool is_current_thread(
+    const QThread* target_thread) noexcept
+{
+    if (target_thread == nullptr) {
+        return false;
+    }
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    return target_thread->isCurrentThread();
+#else
+    return QThread::currentThread() == target_thread;
+#endif
+}
+
 namespace detail {
+
+// Keep source compatibility for existing consumers while they migrate to the
+// public spelling above. New code should call vnm::qt::is_current_thread().
+[[nodiscard]] inline bool is_current_thread(
+    const QThread* target_thread) noexcept
+{
+    return vnm::qt::is_current_thread(target_thread);
+}
 
 struct Qt_warning_reporter
 {
@@ -333,20 +356,6 @@ template<class Task, class ReporterSource, class... TaskArgs>
     catch (...) {
         return Post_result::SUBMISSION_FAILED;
     }
-}
-
-[[nodiscard]] inline bool is_current_thread(
-    const QThread* target_thread) noexcept
-{
-    if (target_thread == nullptr) {
-        return false;
-    }
-
-#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
-    return target_thread->isCurrentThread();
-#else
-    return QThread::currentThread() == target_thread;
-#endif
 }
 
 template<class Result>

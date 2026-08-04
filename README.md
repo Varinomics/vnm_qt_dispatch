@@ -34,6 +34,16 @@ const int answer = vnm::qt::blocking_call(
 
 ## API
 
+### Thread query
+
+```cpp
+bool is_current_thread(const QThread* target_thread) noexcept;
+```
+
+Returns `false` for a null thread and otherwise reports whether the caller is
+executing on that exact `QThread`. The implementation uses Qt's native query
+where available and preserves the same contract on the minimum supported Qt.
+
 ### Queued work
 
 ```cpp
