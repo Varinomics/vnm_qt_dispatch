@@ -1,11 +1,10 @@
 cmake_minimum_required(VERSION 3.21)
+include("${VNM_TOOLCHAIN_CONTEXT}")
 
 foreach(required_variable
     PROVIDER_BINARY_DIR
     TEST_BINARY_ROOT
     TEST_CONFIG
-    TEST_GENERATOR
-    TEST_CXX_COMPILER
     TEST_QT_DIR
     TEST_INSTALL_LIBDIR
     TEST_INSTALL_DATADIR)
@@ -49,8 +48,6 @@ function(configure_consumer
         "${CMAKE_COMMAND}"
         -S "${CMAKE_CURRENT_LIST_DIR}/installed"
         -B "${binary_dir}"
-        -G "${TEST_GENERATOR}"
-        "-DCMAKE_CXX_COMPILER=${TEST_CXX_COMPILER}"
         "-DQt6_DIR=${TEST_QT_DIR}"
         "-Dvnm_qt_dispatch_DIR:PATH=${provider_package_dir}"
         "-DVNM_QT_DISPATCH_EXPECTED_DIR:PATH=${provider_package_dir}"
@@ -65,13 +62,7 @@ function(configure_consumer
         list(APPEND configure_command
             "-DVNM_QT_DISPATCH_EXPECT_INCOMPATIBLE=TRUE")
     endif()
-    if(NOT "${TEST_GENERATOR_PLATFORM}" STREQUAL "")
-        list(APPEND configure_command -A "${TEST_GENERATOR_PLATFORM}")
-    endif()
-    if(NOT "${TEST_CMAKE_MAKE_PROGRAM}" STREQUAL "")
-        list(APPEND configure_command
-            "-DCMAKE_MAKE_PROGRAM=${TEST_CMAKE_MAKE_PROGRAM}")
-    endif()
+    vnm_append_toolchain_args(configure_command)
     if(DEFINED QT_FORCE_MIN_CMAKE_VERSION_FOR_USING_QT)
         string(CONCAT qt_minimum_argument
             "-DQT_FORCE_MIN_CMAKE_VERSION_FOR_USING_QT="
@@ -145,7 +136,7 @@ assert_provider_cache("${test_binary_dir}")
 
 execute_process(
     COMMAND "${CMAKE_COMMAND}" --build "${test_binary_dir}"
-        --config "${TEST_CONFIG}"
+        --config "${TEST_CONFIG}" --parallel 1
     RESULT_VARIABLE build_result)
 if(NOT build_result EQUAL 0)
     message(FATAL_ERROR
