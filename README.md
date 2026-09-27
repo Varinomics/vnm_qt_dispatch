@@ -125,10 +125,17 @@ loop, or incorrect shutdown ordering can still deadlock.
 
 ## Typed member calls
 
-All operations have typed member-function overloads:
+`post()`, `post_with_exception_reporter()`, and `blocking_call()` have typed
+member-function overloads. `blocking_call_with_submission_observer()` accepts
+a callable task; wrap a member call in a lambda when using it.
 
 ```cpp
-post(worker, &Worker::consume, std::move(value));
+const auto post_result =
+    post(worker, &Worker::consume, std::move(value));
+if (post_result != Post_result::QUEUED) {
+    // Handle an admission failure.
+}
+
 blocking_call(worker, &Worker::compute, input);
 ```
 
