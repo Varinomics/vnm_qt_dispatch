@@ -14,8 +14,11 @@ option(VNM_QT_DISPATCH_BUILD_TESTING
     "Build vnm_qt_dispatch tests"
     ${vnm_qt_dispatch_build_testing_default})
 
-set(VNM_QT_DISPATCH_QT_MIN_VERSION "6.5" CACHE STRING
+set(VNM_QT_DISPATCH_QT_MIN_VERSION "6.12" CACHE STRING
     "Minimum Qt 6 version required by vnm_qt_dispatch")
+if(VNM_QT_DISPATCH_QT_MIN_VERSION VERSION_LESS 6.12)
+    message(FATAL_ERROR "vnm_qt_dispatch requires Qt 6.12 or newer.")
+endif()
 
 find_package(Qt6 ${VNM_QT_DISPATCH_QT_MIN_VERSION} REQUIRED COMPONENTS Core)
 

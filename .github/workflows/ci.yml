@@ -24,37 +24,13 @@ jobs:
         include:
           - platform: Windows
             runner: windows-2022
-            qt_version: "6.5.3"
-          - platform: Windows
-            runner: windows-2022
-            qt_version: "6.10.3"
+            qt_version: "6.12.0"
           - platform: Linux
             runner: ubuntu-24.04
-            qt_version: "6.5.3"
-          - platform: Linux
-            runner: ubuntu-24.04
-            qt_version: "6.6.3"
-          - platform: Linux
-            runner: ubuntu-24.04
-            qt_version: "6.7.3"
-          - platform: Linux
-            runner: ubuntu-24.04
-            qt_version: "6.8.3"
-          - platform: Linux
-            runner: ubuntu-24.04
-            qt_version: "6.9.3"
-          - platform: Linux
-            runner: ubuntu-24.04
-            qt_version: "6.10.3"
-          - platform: Linux
-            runner: ubuntu-24.04
-            qt_version: "6.11.1"
+            qt_version: "6.12.0"
           - platform: macOS
             runner: macos-15-intel
-            qt_version: "6.5.3"
-          - platform: macOS
-            runner: macos-15-intel
-            qt_version: "6.11.1"
+            qt_version: "6.12.0"
 
     steps:
       - name: Checkout

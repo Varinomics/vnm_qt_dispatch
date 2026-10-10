@@ -1,7 +1,7 @@
 # vnm_qt_dispatch
 
 `vnm_qt_dispatch` is a single-header C++20 utility for dispatching owned work
-through `QObject` thread affinity. Its only product dependency is Qt Core, and
+through `QObject` thread affinity. Its only product dependency is Qt 6.12 or newer Core, and
 its public CMake target is `vnm_qt_dispatch::vnm_qt_dispatch`.
 
 Qt already provides the thread-safe functor overloads of
