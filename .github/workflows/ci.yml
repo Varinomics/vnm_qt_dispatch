@@ -39,6 +39,8 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
+          # Upstream aqt handles the architecture-specific Qt 6.11+ Windows repositories.
+          aqtsource: ${{ runner.os == 'Windows' && 'git+https://github.com/miurahr/aqtinstall.git' || '' }}
           version: ${{ matrix.qt_version }}
           cache: true
 
