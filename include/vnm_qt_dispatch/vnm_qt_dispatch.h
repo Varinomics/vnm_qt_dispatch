@@ -426,13 +426,7 @@ public:
             std::rethrow_exception(m_exception);
         }
 
-        if constexpr (std::is_void_v<Result>) {
-            m_result.take();
-            return;
-        }
-        else {
-            return m_result.take();
-        }
+        return m_result.take();
     }
 
 private:
@@ -460,15 +454,14 @@ public:
     Call_event(Call_event&& other) noexcept
         :
             m_operation(std::move(other.m_operation)),
-            m_completion(std::move(other.m_completion)),
-            m_armed(std::exchange(other.m_armed, false))
+            m_completion(std::move(other.m_completion))
     {}
 
     Call_event& operator=(Call_event&&) = delete;
 
     ~Call_event() noexcept
     {
-        if (m_armed && m_operation) {
+        if (m_operation) {
             // Promise destruction follows this body, so task destruction is
             // sequenced before broken_promise wakes the caller.
             m_operation->cancel();
@@ -485,7 +478,6 @@ public:
     {
         m_operation->execute();
         m_operation.reset();
-        m_armed = false;
         try {
             m_completion.set_value();
         }
@@ -498,7 +490,6 @@ public:
 private:
     std::shared_ptr<Operation> m_operation;
     std::promise<void> m_completion;
-    bool m_armed = true;
 };
 
 template<class Task, class SubmissionObserver, class... TaskArgs>
@@ -528,13 +519,7 @@ requires Submission_observer<SubmissionObserver>
     if (is_current_thread(target_thread)) {
         Task task(std::forward<TaskArgs>(task_args)...);
         std::invoke(submission_observer);
-        if constexpr (std::is_void_v<result_t>) {
-            std::invoke(task);
-            return;
-        }
-        else {
-            return std::invoke(task);
-        }
+        return std::invoke(task);
     }
 
     using operation_t = Call_operation<Task, result_t>;
@@ -571,13 +556,7 @@ requires Submission_observer<SubmissionObserver>
         throw;
     }
 
-    if constexpr (std::is_void_v<result_t>) {
-        operation->take();
-        return;
-    }
-    else {
-        return operation->take();
-    }
+    return operation->take();
 }
 
 } // namespace detail
