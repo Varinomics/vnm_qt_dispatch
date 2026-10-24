@@ -16,8 +16,8 @@
 #include <type_traits>
 #include <utility>
 
-#if QT_VERSION < QT_VERSION_CHECK(6, 5, 0)
-#  error "vnm_qt_dispatch requires Qt 6.5 or newer."
+#if QT_VERSION < QT_VERSION_CHECK(6, 12, 0)
+#  error "vnm_qt_dispatch requires Qt 6.12 or newer."
 #endif
 
 #ifdef QT_NO_EXCEPTIONS
@@ -103,11 +103,7 @@ inline constexpr Ignore_exceptions ignore_exceptions{};
         return false;
     }
 
-#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     return target_thread->isCurrentThread();
-#else
-    return QThread::currentThread() == target_thread;
-#endif
 }
 
 namespace detail {
