@@ -5,6 +5,7 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,6 +13,11 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  CMAKE_GENERATOR: Ninja
+  CMAKE_CXX_COMPILER_LAUNCHER: sccache
+  SCCACHE_GHA_ENABLED: 'true'
 
 jobs:
   build-and-test:
@@ -44,6 +50,16 @@ jobs:
           version: ${{ matrix.qt_version }}
           cache: true
 
+      - name: Initialize the Windows compiler environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up persistent compiler cache
+        id: compiler-cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
       - name: Configure
         run: >
           cmake -S . -B build
@@ -52,7 +68,11 @@ jobs:
           -DBUILD_TESTING=ON
 
       - name: Build
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel 2
 
       - name: Run tests
         run: ctest --test-dir build -C Release --output-on-failure --progress
+
+      - name: Compiler cache statistics
+        if: always() && steps.compiler-cache.outcome == 'success'
+        run: sccache --show-stats
