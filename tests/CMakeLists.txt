@@ -1,4 +1,4 @@
-find_package(Qt6 ${VNM_QT_DISPATCH_QT_MIN_VERSION} REQUIRED COMPONENTS Test)
+find_package(Qt6 6.12 REQUIRED COMPONENTS Test)
 
 function(vnm_qt_dispatch_register_test test_name)
     if(WIN32)

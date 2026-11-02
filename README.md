@@ -40,9 +40,9 @@ const int answer = vnm::qt::blocking_call(
 bool is_current_thread(const QThread* target_thread) noexcept;
 ```
 
-Returns `false` for a null thread and otherwise reports whether the caller is
-executing on that exact `QThread`. The implementation uses Qt's native query
-where available and preserves the same contract on the minimum supported Qt.
+Returns `false` if `target_thread` is null. Otherwise it returns
+`target_thread->isCurrentThread()`, which tells whether the caller is running
+on that thread.
 
 ### Queued work
 
@@ -208,19 +208,7 @@ foreign `std::thread` teardown, source and installed consumption, and
 `QT_NO_KEYWORDS`.
 
 CI should exercise every supported Qt line because cancellation depends on Qt
-releasing an event-owned functor when a pending meta-call event is removed. The
-implementation no longer depends on the private mechanics used by
-`Qt::BlockingQueuedConnection`.
-
-## Version 2 migration
-
-Version 2 intentionally changes the source API:
-
-- `call(...)` is now `blocking_call(...)`;
-- `Post_result::QUEUED` continues to mean admission, not execution;
-- preparation failure is distinguished as `Post_result::STORAGE_FAILED`;
-- exception reporters may be arbitrary owned callables rather than only
-  function pointers.
+releasing an event-owned functor when a pending meta-call event is removed.
 
 ## License
 
